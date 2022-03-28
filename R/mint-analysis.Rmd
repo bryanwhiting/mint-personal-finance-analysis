@@ -1,0 +1,178 @@
+---
+title: 'Analyzing mint data'
+author: Bryan Whiting
+date: 2022-03-09
+output: html_output
+---
+
+```{r setup, include=FALSE}
+# make it so that none of the code runs.
+knitr::opts_chunk$set(eval=F, include=T)
+library(dplyr)
+library(readr)
+library(lubridate)
+library(magrittr)
+library(gt)
+library(reactable)
+df <- read_csv("~/data/mint.csv") %>%
+  janitor::clean_names() %>%
+  mutate(date = mdy(date))  %>%
+  arrange(desc(date)) %>% #View()
+  mutate(
+    month = month(date),
+    amount = ifelse(transaction_type == "debit", -1 * amount, amount),
+    category = tolower(category),
+    refund = amount > 0  & 
+      !(category %in% 
+                             c("credit card payment", 
+                               "transfer",
+                               "interest income",
+                               "investments",
+                               "income") & 
+                             description != "Venmo")
+  ) %>%
+  group_by(account_name) %>%
+  mutate(cumspend = cumsum(ifelse(transaction_type == "debit", amount, 0))) %>%
+  group_by(category, month) %>% 
+  mutate(cat_cum = cumsum(ifelse(transaction_type == "debit", amount, 0))) %>%
+  ungroup() %>%
+  select(date, amount, cumspend, cat_cum, category, everything()) %>%
+  # if one is a subscription, they're all a subscription
+  group_by(description) %>%
+  mutate(labels = max(ifelse(is.na(labels), " ", labels))) %>%
+  ungroup() 
+
+# Data validation
+df %>% filter(refund) %>% View()
+View(df)
+```
+
+```{r}
+df %>%
+  filter(category != 'credit card payment',
+         date >= "2022-01-01") %>%
+  group_by(account_name) %>%
+  summarize(sum(amount))
+  
+df %>%
+  filter(
+    account_name == "Veronica Marriott", 
+    #transaction_type != "credit"
+    ) %>%
+  View()
+```
+
+
+# Budget the Following
+
+- Income
+- Rent
+- Tithing
+- Food
+
+```{r}
+dollars <- colFormat(currency = "USD", separators = T, locales = "en-US", digits=1)
+
+# LOOK AT LAST MONTH
+df %>% 
+  filter(date >= "2022-02-01", 
+         date < "2022-03-01") %>% 
+  filter(category != "credit card payment") %>%
+  filter(category != "income") %>%
+  filter(category != "transfer") %T>%
+  View() ->
+  tmp
+
+tmp %>% 
+  group_by(category) %>% 
+  summarize(amount = sum(amount)) %>% 
+  arrange(amount) %>% 
+  mutate(annualized = amount * 12) %>% 
+  reactable::reactable(., columns = list(
+  amount = colDef(format = dollars),
+  annualized = colDef(format=dollars)
+  ))
+```
+
+Analyze averages for budgeting.
+```{r}
+df %>% 
+  filter(date >= "2021-01-01", date <= "2021-12-31") %>%
+  # filter(original_description == "City of Pleasanton") %>%
+  filter(category == "gas & fuel") %>%
+  summarize(
+    per_month = sum(amount)/12,
+    min = min(amount),
+    mean = mean(amount),
+    p80 = quantile(amount, p=0.2),
+    max = max(amount)
+  )
+  
+```
+
+
+## Bdget
+
+```{r}
+df %>% 
+  filter(date >= "2022-03-01", 
+         date < "2022-04-01") %>% 
+  filter(category != "credit card payment") %>%
+  # filter(category != "income") %>%
+  filter(category != "transfer") %>% #distinct(category)
+  mutate(
+    cat2 = case_when(
+      category %in% c("internet", "mobile phone") ~ "phone, comcast",
+      category %in% c("restaurants", "fast food") ~ "eating out",
+      category %in% c("gas & fuel") ~ "gas",
+      TRUE ~ category
+    )
+  ) %>% 
+  mutate(reimbursable = ifelse(labels == "Reimbursable", 1, 0)) %>%
+  group_by(cat2, reimbursable) %>% 
+  summarize(total = sum(amount)) %>% 
+  ungroup() %>%
+  arrange(reimbursable, desc(abs(total))) %>% 
+  # filter(cat2 != "property tax") %>%
+  mutate(cumsum = cumsum(total))
+  
+```
+
+
+## Categories
+
+### Credit card payments
+```{r}
+df %>%
+  filter(category == "credit card payment") %>%
+  View()
+```
+
+
+```{r}
+df 
+```
+
+
+```{r}
+mint_tots <- df %>% 
+  filter(category != 'CREDIT CARD PAYMENT',
+         date >= as.Date('2017-11-01')) %>%
+  group_by(yrmo, category) %>% 
+  summarize(mon_cat_sum = sum(amt)) %>%
+  mutate(mon_all_sum = sum(mon_cat_sum)) %>%
+  arrange(yrmo, category) %>%
+  filter(yrmo >= as.Date('2018-01-01'))
+
+
+mint_trans <- df %>% mutate(yrwk = paste(year, week(date), sep="-")) %>%
+  group_by(yrmo, category) %>%
+  mutate(month_tot = sum(amt)) %>% 
+  group_by(yrwk, category) %>%
+  mutate(week_tot = sum(amt)) %>%
+  filter(category %in% c('GROCERIES', 'SHOPPING')) %>%
+  arrange(desc(yrmo), category, amt) %>%
+  select(category, starts_with('description'),date, amt, yrmo, month_tot, yrwk, week_tot)
+  
+
+```
